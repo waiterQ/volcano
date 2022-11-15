@@ -130,3 +130,5 @@ replace (
 	k8s.io/sample-cli-plugin => k8s.io/sample-cli-plugin v0.25.0
 	k8s.io/sample-controller => k8s.io/sample-controller v0.25.0
 )
+
+replace volcano.sh/apis v1.6.0-alpha.0.0.20221021034835-d3a04f5cfc7c => github.com/jiangkaihua/apis v1.5.0-beta.0.0.20221115015857-3f5427a87617
