@@ -55,6 +55,9 @@ const (
 
 	// State is state of queue
 	State string = "State"
+
+	// Allocated is allocated resources of the queue
+	Allocated string = "Allocated"
 )
 
 var listQueueFlags = &listFlags{}
@@ -88,15 +91,15 @@ func ListQueue() error {
 
 // PrintQueues prints queue information.
 func PrintQueues(queues *v1beta1.QueueList, writer io.Writer) {
-	_, err := fmt.Fprintf(writer, "%-25s%-8s%-8s%-8s%-8s%-8s%-8s\n",
-		Name, Weight, State, Inqueue, Pending, Running, Unknown)
+	_, err := fmt.Fprintf(writer, "%-25s%-8s%-8s%-8s%-8s%-8s%-8s%-8s\n",
+		Name, Weight, State, Inqueue, Pending, Running, Unknown, Allocated)
 	if err != nil {
 		fmt.Printf("Failed to print queue command result: %s.\n", err)
 	}
 	for _, queue := range queues.Items {
-		_, err = fmt.Fprintf(writer, "%-25s%-8d%-8s%-8d%-8d%-8d%-8d\n",
+		_, err = fmt.Fprintf(writer, "%-25s%-8d%-8s%-8d%-8d%-8d%-8d%-8v\n",
 			queue.Name, queue.Spec.Weight, queue.Status.State, queue.Status.Inqueue,
-			queue.Status.Pending, queue.Status.Running, queue.Status.Unknown)
+			queue.Status.Pending, queue.Status.Running, queue.Status.Unknown, queue.Status.Allocated)
 		if err != nil {
 			fmt.Printf("Failed to print queue command result: %s.\n", err)
 		}
