@@ -20,6 +20,9 @@ import (
 	"reflect"
 	"testing"
 
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"volcano.sh/volcano/pkg/scheduler/api"
 )
 
@@ -96,6 +99,41 @@ func TestGetMinInt(t *testing.T) {
 		result := GetMinInt(test.vals...)
 		if result != test.result {
 			t.Errorf("Failed test case #%d, expected: %#v, got %#v", i, test.result, result)
+		}
+	}
+}
+
+func TestConvertRes2ResList(t *testing.T) {
+	cases := []struct {
+		name string
+		Res *api.Resource
+		Expect v1.ResourceList
+	}{
+		{
+			name: "mutiResources",
+			Res: &api.Resource{
+				MilliCPU:        4000,
+				Memory:          4000,
+				ScalarResources: map[v1.ResourceName]float64{"scalar.test/scalar1": 1, "scalar.test/scalar2": 2},
+			},
+			Expect: v1.ResourceList{
+				v1.ResourceCPU: *resource.NewMilliQuantity(4000, resource.DecimalSI),
+				v1.ResourceMemory: *resource.NewQuantity(4000, resource.BinarySI),
+				"scalar.test/scalar1": *resource.NewMilliQuantity(1, resource.DecimalSI),
+				"scalar.test/scalar2": *resource.NewMilliQuantity(2, resource.DecimalSI),
+			},
+		},
+		{
+			name: "null Resources",
+			Res: nil,
+			Expect: v1.ResourceList{},
+		},
+	}
+
+	for _, test := range cases {
+		result := ConvertRes2ResList(test.Res)
+		if !reflect.DeepEqual(result, test.Expect) {
+			t.Errorf("Failed test case #%s, expected: %#v, got %#v", test.name, test.Expect, result)
 		}
 	}
 }
