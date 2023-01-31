@@ -17,7 +17,9 @@ limitations under the License.
 package podgroup
 
 import (
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -42,8 +44,9 @@ func init() {
 
 // pgcontroller the Podgroup pgcontroller type.
 type pgcontroller struct {
-	kubeClient kubernetes.Interface
-	vcClient   vcclientset.Interface
+	kubeClient    kubernetes.Interface
+	vcClient      vcclientset.Interface
+	dynamicClient dynamic.Interface
 
 	podInformer coreinformers.PodInformer
 	pgInformer  schedulinginformer.PodGroupInformer
@@ -76,6 +79,7 @@ func (pg *pgcontroller) Name() string {
 func (pg *pgcontroller) Initialize(opt *framework.ControllerOption) error {
 	pg.kubeClient = opt.KubeClient
 	pg.vcClient = opt.VolcanoClient
+	pg.dynamicClient = opt.DynamicClient
 	pg.workers = opt.WorkerNum
 
 	pg.queue = workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
@@ -89,7 +93,8 @@ func (pg *pgcontroller) Initialize(opt *framework.ControllerOption) error {
 	pg.podLister = pg.podInformer.Lister()
 	pg.podSynced = pg.podInformer.Informer().HasSynced
 	pg.podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: pg.addPod,
+		AddFunc:    pg.addPod,
+		DeleteFunc: pg.deletePod,
 	})
 
 	factory := informerfactory.NewSharedInformerFactory(pg.vcClient, 0)
@@ -118,6 +123,15 @@ func (pg *pgcontroller) Run(stopCh <-chan struct{}) {
 		}
 	}
 
+	// check stock pgs
+	pgs, err := pg.pgLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("pgController start check pgs faild: %v", err)
+	}
+	for _, item := range pgs {
+		pg.deletePGbyOwnerAtStartup(item)
+	}
+
 	for i := 0; i < int(pg.workers); i++ {
 		go wait.Until(pg.worker, 0, stopCh)
 	}
@@ -140,27 +154,42 @@ func (pg *pgcontroller) processNextReq() bool {
 	req := obj.(podRequest)
 	defer pg.queue.Done(req)
 
-	pod, err := pg.podLister.Pods(req.podNamespace).Get(req.podName)
-	if err != nil {
-		klog.Errorf("Failed to get pod by <%v> from cache: %v", req, err)
-		return true
+	if req.pod == nil {
+		var err error
+		req.pod, err = pg.podLister.Pods(req.podNamespace).Get(req.podName)
+		if err != nil {
+			klog.Errorf("Failed to get pod by <%v> from cache: %v", req, err)
+			return true
+		}
 	}
+	pod := req.pod
 
 	if !commonutil.Contains(pg.schedulerNames, pod.Spec.SchedulerName) {
 		klog.V(5).Infof("pod %v/%v field SchedulerName is not matched", pod.Namespace, pod.Name)
 		return true
 	}
 
-	if pod.Annotations != nil && pod.Annotations[scheduling.KubeGroupNameAnnotationKey] != "" {
-		klog.V(5).Infof("pod %v/%v has created podgroup", pod.Namespace, pod.Name)
-		return true
-	}
+	if req.action == ADD {
+		if pod.Annotations != nil && pod.Annotations[scheduling.KubeGroupNameAnnotationKey] != "" {
+			klog.V(5).Infof("pod %v/%v has created podgroup", pod.Namespace, pod.Name)
+			return true
+		}
 
-	// normal pod use volcano
-	if err := pg.createNormalPodPGIfNotExist(pod); err != nil {
-		klog.Errorf("Failed to handle Pod <%s/%s>: %v", pod.Namespace, pod.Name, err)
-		pg.queue.AddRateLimited(req)
-		return true
+		// normal pod use volcano
+		if err := pg.createNormalPodPGIfNotExist(pod); err != nil {
+			klog.Errorf("Failed to handle Pod <%s/%s>: %v", pod.Namespace, pod.Name, err)
+			pg.queue.AddRateLimited(req)
+			return true
+		}
+	} else if req.action == DELETE {
+		if pod.Annotations == nil || pod.Annotations[scheduling.KubeGroupNameAnnotationKey] == "" {
+			klog.V(5).Infof("pod %v/%v not have podgroup", pod.Namespace, pod.Name)
+			return true
+		}
+		if err := pg.deletePGbyPodOwner(pod); err != nil {
+			pg.queue.AddRateLimited(req)
+			return true
+		}
 	}
 
 	// If no error, forget it.

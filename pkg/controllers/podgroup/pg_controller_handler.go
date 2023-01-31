@@ -19,6 +19,8 @@ package podgroup
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
@@ -36,7 +38,18 @@ import (
 type podRequest struct {
 	podName      string
 	podNamespace string
+	action       action
+	pod          *v1.Pod
 }
+
+type action string
+
+const (
+	// ADD is the action that react create-podGroup by pod created event
+	ADD action = "add"
+	// DELETE is the action that react delete-podGroup by pod deleted event
+	DELETE action = "delete"
+)
 
 type metadataForMergePatch struct {
 	Metadata annotationForMergePatch `json:"metadata"`
@@ -56,6 +69,24 @@ func (pg *pgcontroller) addPod(obj interface{}) {
 	req := podRequest{
 		podName:      pod.Name,
 		podNamespace: pod.Namespace,
+		action:       ADD,
+	}
+
+	pg.queue.Add(req)
+}
+
+func (pg *pgcontroller) deletePod(obj interface{}) {
+	pod, ok := obj.(*v1.Pod)
+	if !ok {
+		klog.Errorf("Failed to convert %v to v1.Pod", obj)
+		return
+	}
+
+	req := podRequest{
+		podName:      pod.Name,
+		podNamespace: pod.Namespace,
+		action:       DELETE,
+		pod:          pod,
 	}
 
 	pg.queue.Add(req)
@@ -147,7 +178,7 @@ func (pg *pgcontroller) inheritUpperAnnotations(pod *v1.Pod, obj *scheduling.Pod
 func (pg *pgcontroller) createNormalPodPGIfNotExist(pod *v1.Pod) error {
 	pgName := helpers.GeneratePodgroupName(pod)
 
-	if _, err := pg.pgLister.PodGroups(pod.Namespace).Get(pgName); err != nil {
+	if pgItem, err := pg.pgLister.PodGroups(pod.Namespace).Get(pgName); err != nil {
 		if !apierrors.IsNotFound(err) {
 			klog.Errorf("Failed to get normal PodGroup for Pod <%s/%s>: %v",
 				pod.Namespace, pod.Name, err)
@@ -203,6 +234,23 @@ func (pg *pgcontroller) createNormalPodPGIfNotExist(pod *v1.Pod) error {
 		if _, err := pg.vcClient.SchedulingV1beta1().PodGroups(pod.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{}); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				klog.Errorf("Failed to create normal PodGroup for Pod <%s/%s>: %v",
+					pod.Namespace, pod.Name, err)
+				return err
+			}
+		}
+	} else {
+		newMinResources := util.GetPodQuotaUsage(pod)
+		if !reflect.DeepEqual(pgItem.Spec.MinResources, newMinResources) {
+			newMinResourcesJson, err := json.Marshal(newMinResources)
+			if err != nil {
+				klog.Errorf("Failed to patch normal PodGroup for Pod <%s/%s>: %v",
+					pod.Namespace, pod.Name, err)
+				return err
+			}
+			patch := fmt.Sprintf(`[{"op": "replace", "path": "/spec/minResources", "value":%s}]`, newMinResourcesJson)
+			patchBytes := []byte(patch)
+			if _, err := pg.vcClient.SchedulingV1beta1().PodGroups(pod.Namespace).Patch(context.TODO(), pgItem.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{}); err != nil {
+				klog.Errorf("Failed to patch normal PodGroup for Pod <%s/%s>: %v",
 					pod.Namespace, pod.Name, err)
 				return err
 			}
