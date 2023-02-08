@@ -66,7 +66,7 @@ func TestNodeInfo_AddPod(t *testing.T) {
 					"c1/p1": NewTaskInfo(case01Pod1),
 					"c1/p2": NewTaskInfo(case01Pod2),
 				},
-				Others: map[string]Devices{
+				Others: map[string]interface{}{
 					GPUSharingDevice: gpushare.NewGPUDevices("n1", case01Node),
 				},
 				ImageStates: make(map[string]*k8sframework.ImageStateSummary),
